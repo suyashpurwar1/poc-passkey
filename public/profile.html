@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Profile</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="profile-container">
+        <div class="profile-section">
+            <h1>Profile Page</h1>
+        </div>
+        <div class="profile-section">
+            <p>Email: <span id="user-email"></span></p>
+        </div>
+        <div class="profile-section">
+            <button id="register-passkey-btn">Register Passkey</button>
+        </div>
+        <div id="status"></div>
+        <div id="error" class="hidden"></div>
+    </div>
+
+    <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
+    <script>
+        const registerPasskeyBtn = document.getElementById('register-passkey-btn');
+        const userEmailSpan = document.getElementById('user-email');
+        const statusDiv = document.getElementById('status');
+        const errorDiv = document.getElementById('error');
+
+        // Fetch user data on page load
+        window.addEventListener('load', async () => {
+            const url = new URL(window.location);
+            const userId = url.searchParams.get('userId');
+
+            try {
+                const response = await fetch(`/auth/user/${userId}`);
+                if (!response.ok) {
+                    throw new Error('Failed to fetch user data');
+                }
+                const userData = await response.json();
+                userEmailSpan.innerText = userData.email;
+            } catch (error) {
+                errorDiv.classList.remove('hidden');
+                errorDiv.innerText = error.message || 'Failed to load user data';
+            }
+        });
+
+        registerPasskeyBtn.addEventListener('click', async (e) => {
+        const url = new URL(window.location);
+        const userId = url.searchParams.get('userId');
+        statusDiv.innerText = 'Registering passkey...';
+        errorDiv.classList.add('hidden');
+
+        try {
+            const response = await fetch('/auth/register-challenge', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ userId })
+            });
+
+            if (!response.ok) {
+                throw new Error('Failed to fetch registration challenge');
+            }
+
+            const challengeResult = await response.json();
+            const { options } = challengeResult;
+
+            const registrationResult = await SimpleWebAuthnBrowser.startRegistration(options);
+            console.log('Registration Result:', registrationResult);
+
+            const verificationResp = await fetch('/auth/register-verify', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ userId, cred: registrationResult })
+            });
+
+            if (!verificationResp.ok) {
+                throw new Error('Failed to verify registration');
+            }
+
+            const verificationJSON = await verificationResp.json();
+
+            if (verificationJSON && verificationJSON.success) {
+                statusDiv.innerText = 'Passkey registered successfully!';
+            } else {
+                throw new Error('Passkey registration failed');
+            }
+        } catch (error) {
+            errorDiv.classList.remove('hidden');
+            errorDiv.innerText = error.message || 'An error occurred during passkey registration';
+        }
+    });
+
+    </script>
+</body>
+</html>

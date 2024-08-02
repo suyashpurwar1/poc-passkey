@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Signup</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Sign Up</h1>
+        <form id="register-form">
+            <input type="email" placeholder="Email" id="email" required />
+            <input type="password" placeholder="Password" id="password" required />
+            <button type="submit">Register</button>
+        </form>
+        <div id="status"></div>
+        <div id="error" class="hidden"></div>
+    </div>
+
+    <script>
+        const form = document.getElementById('register-form');
+        const emailField = document.getElementById('email');
+        const passwordField = document.getElementById('password');
+        const statusDiv = document.getElementById('status');
+        const errorDiv = document.getElementById('error');
+
+        form.addEventListener('submit', async e => {
+            e.preventDefault();
+            
+            statusDiv.textContent = 'Registering...';
+            errorDiv.classList.add('hidden');
+
+            try {
+                const response = await fetch('/auth/register', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ 
+                        email: emailField.value, 
+                        password: passwordField.value 
+                    })
+                });
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    if (response.status === 409) {
+                        throw new Error('Email already in use. Please use a different email or login.');
+                    } else {
+                        throw new Error(result.error || 'Registration failed');
+                    }
+                }
+
+                statusDiv.textContent = 'Registration successful!';
+                // Redirect to profile page after successful registration
+                setTimeout(() => {
+                    window.location.href = `/profile.html?userId=${result.id}`;
+                }, 1000);
+            } catch (error) {
+                //console.error('Error during registration:', error);
+                statusDiv.textContent = '';
+                errorDiv.classList.remove('hidden');
+                errorDiv.textContent = error.message || 'An error occurred during registration';
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "nodemon",
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "program": "${workspaceFolder}/app.js",
+      "request": "launch",
+      "restart": true,
+
+      "runtimeExecutable": "${workspaceFolder}/node_modules/nodemon/bin/nodemon.js",
+      "type": "node"
+    }
+  ]
+}
