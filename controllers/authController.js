@@ -7,16 +7,25 @@ const {
   verifyAuthenticationResponse,
 } = require("@simplewebauthn/server");
 const challengeStore = require("../utils/challengeStore");
+const { v4: uuidv4 } = require("uuid");
 
 exports.register = async (req, res) => {
-  const { email, password } = req.body;
-
-  if (!email || !password) {
-    return res.status(400).json({ error: "Email and password are required" });
+  let { email, password, username } = req.body;
+  username=email;
+  if (!email || !password || !username) {
+    return res
+      .status(400)
+      .json({ error: "Email, password, and username are required" });
   }
 
   try {
-    const user = new User({ email, password });
+    const user = new User({
+      user_id: uuidv4(),
+      passkey_user_id: uuidv4(),
+      email,
+      password,
+      username,
+    });
     await user.save();
 
     return res.status(201).json({ id: user._id, email: user.email });
@@ -112,8 +121,10 @@ exports.registerVerify = async (req, res) => {
       cred_id: Buffer.from(credentialID).toString("base64url"),
       cred_public_key: Buffer.from(credentialPublicKey),
       internal_user_id: user._id,
+      passkey_user_id: user.passkey_user_id, // Ensure this is set
       webauthn_user_id: cred.response.userHandle, // Ensure this property exists in cred.response
       counter,
+      transports:cred.response.transports,
       deviceType: credentialDeviceType,
       backUp: credentialBackedUp,
     });
@@ -127,21 +138,16 @@ exports.registerVerify = async (req, res) => {
   }
 };
 
+
 exports.loginChallenge = async (req, res) => {
-  const { email } = req.body;
-
-  console.log("Email:", email); // Log the email received
   try {
-    const user = await User.findOne({ email });
-
-    if (!user) return res.status(404).json({ error: "User not found!" });
-
     const opts = await generateAuthenticationOptions({
-      userVerification: "preferred",
+      rpID: "localhost",
       allowCredentials: [],
     });
 
-    challengeStore[user._id] = opts.challenge;
+    // Save the challenge in the session
+    req.session.authChallenge = opts.challenge;
 
     console.log("Generated Challenge:", opts.challenge); // Log the generated challenge
 
@@ -153,42 +159,69 @@ exports.loginChallenge = async (req, res) => {
 };
 
 exports.loginVerify = async (req, res) => {
-  const { email, cred } = req.body;
+  const { cred } = req.body;
+
   try {
-    const user = await User.findOne({ email });
+    // Decode the credential ID from base64url
+   const credentialId = Buffer.from(cred.id).toString("base64url");
+    console.log(credentialId);
+    // Find the passkey using the credential ID
+    const passkey = await Passkey.findOne({ cred_id: credentialId });
 
-    if (!user) return res.status(404).json({ error: "User not found!" });
+    if (!passkey) {
+      return res.status(404).json({ error: "Passkey not found!" });
+    }
 
-    const challenge = challengeStore[user._id];
-    const passkey = await Passkey.findOne({ internal_user_id: user._id });
+    // Find the user using the passkey_user_id
+    const user = await User.findOne({
+      passkey_user_id: passkey.passkey_user_id,
+    });
 
-    if (!passkey) return res.status(404).json({ error: "Passkey not found!" });
+    if (!user) {
+      return res.status(404).json({ error: "User not found!" });
+    }
 
-    console.log("Challenge in LoginVerify:", challenge); // Log the challenge
-    console.log("Passkey in LoginVerify:", passkey); // Log the passkey
+    // Retrieve the challenge from the session
+    const challenge = req.session.authChallenge;
+
+    if (!challenge) {
+      return res
+        .status(400)
+        .json({ error: "No authentication challenge found" });
+    }
+
+    console.log("Challenge in LoginVerify:", challenge);
+    console.log("Passkey in LoginVerify:", passkey);
 
     const result = await verifyAuthenticationResponse({
       response: cred,
       expectedChallenge: challenge,
-      expectedOrigin: "http://localhost:3000",
-      expectedRPID: "localhost",
+      expectedOrigin: process.env.EXPECTED_ORIGIN || "http://localhost:3000",
+      expectedRPID: process.env.EXPECTED_RPID || "localhost",
       authenticator: {
-        credentialID: passkey.cred_id,
+        credentialID: Buffer.from(passkey.cred_id, "base64"),
         credentialPublicKey: passkey.cred_public_key,
         counter: passkey.counter,
       },
     });
 
-    console.log("Verification Result:", result); // Log the verification result
+    console.log("Verification Result:", result);
 
-    if (!result.verified) return res.json({ error: "Something went wrong" });
-
-    if (result.verified) {
-      const { authenticationInfo } = result;
-      const { newCounter } = authenticationInfo;
-      passkey.counter = newCounter;
-      await passkey.save();
+    if (!result.verified) {
+      return res.status(401).json({ error: "Authentication failed" });
     }
+
+    // Update the counter
+    passkey.counter = result.authenticationInfo.newCounter;
+    await passkey.save();
+
+    // Set session data
+    req.session.userId = user._id;
+    req.session.email = user.email;
+    req.session.signedIn = true;
+
+    // Clear the challenge from the session
+    delete req.session.authChallenge;
 
     return res.json({
       success: true,
@@ -197,6 +230,8 @@ exports.loginVerify = async (req, res) => {
     });
   } catch (error) {
     console.error("Error verifying login:", error);
+    // Clear the challenge on error
+    delete req.session.authChallenge;
     return res.status(500).json({ error: "Error verifying login" });
   }
 };

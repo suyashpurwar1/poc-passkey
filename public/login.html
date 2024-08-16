@@ -1,114 +1,107 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Login</title>
-    <link rel="stylesheet" href="styles.css" />
-  </head>
-  <body>
-    <div class="container">
-      <h1>Login</h1>
-      <form id="login-form">
-        <input type="email" placeholder="Email" id="userEmail" required />
-        <button type="submit">Login with Passkey</button>
-      </form>
-      <div id="status"></div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="container">
+    <h1>Login</h1>
+    <form id="login-form">
+      <button type="submit">Login with Passkey</button>
+    </form>
+    <div id="status"></div>
 
-      <p id="clientTitle" class="hidden">Client Data</p>
-      <pre id="clientDataJSON"></pre>
-      <div id="success" class="hidden">
-        <h2>Login Successful!</h2>
-        <p>Welcome, <span id="user-email"></span></p>
-      </div>
-      <div id="error" class="hidden"></div>
+    <p id="clientTitle" class="hidden">Client Data</p>
+    <pre id="clientDataJSON"></pre>
+    <div id="success" class="hidden">
+      <h2>Login Successful!</h2>
+      <p>Welcome, <span id="user-email"></span></p>
     </div>
+    <div id="error" class="hidden"></div>
+  </div>
 
-    <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
-    <script>
-      const form = document.getElementById("login-form");
-      const userEmailField = document.getElementById("userEmail");
-      const statusDiv = document.getElementById("status");
-      const successDiv = document.getElementById("success");
-      const errorDiv = document.getElementById("error");
-      const userEmailSpan = document.getElementById("user-email");
-      const clientData = document.getElementById("clientDataJSON");
-      const clientTitle = document.getElementById("clientTitle");
+  <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
+  <script>
+    const form = document.getElementById("login-form");
+    const statusDiv = document.getElementById("status");
+    const successDiv = document.getElementById("success");
+    const errorDiv = document.getElementById("error");
+    const userEmailSpan = document.getElementById("user-email");
+    const clientData = document.getElementById("clientDataJSON");
+    const clientTitle = document.getElementById("clientTitle");
 
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const userEmail = userEmailField.value;
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
 
-        errorDiv.classList.add("hidden");
-        successDiv.classList.add("hidden");
-        userEmailSpan.innerText = "";
-        clientData.innerText = "";
-        statusDiv.innerText = "Starting login process...";
-        try {
-          statusDiv.innerText = "Fetching login challenge...";
+      errorDiv.classList.add("hidden");
+      successDiv.classList.add("hidden");
+      userEmailSpan.innerText = "";
+      clientData.innerText = "";
+      statusDiv.innerText = "Starting login process...";
+      try {
+        statusDiv.innerText = "Fetching login challenge...";
 
-          const response = await fetch("/auth/login-challenge", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({ email: userEmail }),
-          });
-          //console.log(response);
-          if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(
-              errorData.error || `HTTP error! status: ${response.status}`
-            );
-          }
-          const challengeResult = await response.json();
-          const { options } = challengeResult; 
+        const response = await fetch("/auth/login-challenge", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+        });
 
-          statusDiv.innerText = "Starting authentication...";
-
-          const authenticationResult =
-            await SimpleWebAuthnBrowser.startAuthentication(options);
-          //console.log(authenticationResult);
-
-          // Decode the clientDataJSON
-          const decodedClientDataJSON = JSON.parse(
-            atob(authenticationResult.response.clientDataJSON)
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(
+            errorData.error || `HTTP error! status: ${response.status}`
           );
-          clientData.innerText = JSON.stringify(decodedClientDataJSON, null, 2);
-          clientTitle.classList.remove("hidden");
-
-          statusDiv.innerText = "Verifying authentication...";
-
-          const verificationResp = await fetch("/auth/login-verify", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              email: userEmail,
-              cred: authenticationResult,
-            }),
-          });
-
-          const verificationJSON = await verificationResp.json();
-
-          if (verificationJSON && verificationJSON.success) {
-            statusDiv.innerText = "Login successful!";
-            successDiv.classList.remove("hidden");
-            userEmailSpan.innerText = verificationJSON.email; // Directly using email
-          } else {
-            statusDiv.innerText = "Login failed!";
-            errorDiv.classList.remove("hidden");
-            errorDiv.innerHTML = `Oh no, something went wrong! Response: <pre>${JSON.stringify(
-              verificationJSON
-            )}</pre>`;
-          }
-        } catch (error) {
-          statusDiv.innerText = "An error occurred!";
-          errorDiv.classList.remove("hidden");
-          errorDiv.innerText = error;
         }
-      });
-    </script>
-  </body>
+        const challengeResult = await response.json();
+        const { options } = challengeResult;
+
+        statusDiv.innerText = "Starting authentication...";
+
+        const authenticationResult =
+          await SimpleWebAuthnBrowser.startAuthentication(options);
+
+        const decodedClientDataJSON = JSON.parse(
+          atob(authenticationResult.response.clientDataJSON)
+        );
+        clientData.innerText = JSON.stringify(decodedClientDataJSON, null, 2);
+        clientTitle.classList.remove("hidden");
+
+        statusDiv.innerText = "Verifying authentication...";
+
+        const verificationResp = await fetch("/auth/login-verify", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            cred: authenticationResult,
+          }),
+        });
+
+        const verificationJSON = await verificationResp.json();
+
+        if (verificationJSON && verificationJSON.success) {
+          statusDiv.innerText = "Login successful!";
+          successDiv.classList.remove("hidden");
+          userEmailSpan.innerText = verificationJSON.email; // Directly using email
+        } else {
+          statusDiv.innerText = "Login failed!";
+          errorDiv.classList.remove("hidden");
+          errorDiv.innerHTML = `Oh no, something went wrong! Response: <pre>${JSON.stringify(
+            verificationJSON
+          )}</pre>`;
+        }
+      } catch (error) {
+        statusDiv.innerText = "An error occurred!";
+        errorDiv.classList.remove("hidden");
+        errorDiv.innerText = error;
+      }
+    });
+  </script>
+</body>
 </html>

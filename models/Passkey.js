@@ -17,21 +17,36 @@ const passkeySchema = new Schema(
       ref: "User",
       required: true,
     },
+    passkey_user_id: {
+      type: String,
+      required: true,
+    },
     counter: {
       type: Number,
       required: true,
     },
-    deviceType:{
-      type:String,
-      default:"",
+    deviceType: {
+      type: String,
+      default: "",
     },
-    backUp:{
-      type:Boolean,
-    }
-
+    backed_up: {
+      type: Boolean,
+    },
+    name: {
+      type: String,
+      default: "",
+    },
+    transports: {
+      type: [String],
+      default: [],
+    },
   },
   { timestamps: true }
 );
+
+// Add indexes
+passkeySchema.index({ cred_id: 1 }, { unique: true });
+passkeySchema.index({ passkey_user_id: 1 });
 
 const Passkey = mongoose.model("Passkey", passkeySchema);
 

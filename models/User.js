@@ -3,6 +3,15 @@ const { Schema } = mongoose;
 
 const userSchema = new Schema(
   {
+    user_id: {
+      type: String,
+      required: true,
+      unique: true,
+    },
+    username: {
+      type: String,
+      required: true,
+    },
     email: {
       type: String,
       required: true,
@@ -12,15 +21,19 @@ const userSchema = new Schema(
       type: String,
       required: true,
     },
+    passkey_user_id: {
+      type: String,
+      required: true,
+      unique: true,
+    },
   },
   { timestamps: true }
 );
 
-// Remove any existing indexes
-userSchema.index({}, { drop: true });
-
-// Add the email index
+// Add indexes
 userSchema.index({ email: 1 }, { unique: true });
+userSchema.index({ user_id: 1 }, { unique: true });
+userSchema.index({ passkey_user_id: 1 }, { unique: true });
 
 const User = mongoose.model("User", userSchema);
 
