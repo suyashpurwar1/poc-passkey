@@ -1,101 +1,406 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Profile</title>
-    <link rel="stylesheet" href="styles.css">
-</head>
-<body>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
     <div class="profile-container">
-        <div class="profile-section">
-            <h1>Profile Page</h1>
-        </div>
-        <div class="profile-section">
-            <p>Email: <span id="user-email"></span></p>
-        </div>
-        <div class="profile-section">
-            <button id="register-passkey-btn">Register Passkey</button>
-        </div>
-        <div id="status"></div>
-        <div id="error" class="hidden"></div>
+      <div class="profile-section">
+        <h1>Profile Page</h1>
+      </div>
+      <div class="profile-section">
+        <p>Email: <span id="user-email"></span></p>
+      </div>
+      <div class="profile-section">
+        <button id="register-passkey-btn">Register Passkey</button>
+      </div>
+      <div id="status"></div>
+      <div id="error" class="hidden"></div>
     </div>
 
-    <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
     <script>
-        const registerPasskeyBtn = document.getElementById('register-passkey-btn');
-        const userEmailSpan = document.getElementById('user-email');
-        const statusDiv = document.getElementById('status');
-        const errorDiv = document.getElementById('error');
+      // Custom Funtion Start
+      // Convert from a Base64URL-encoded string to an ArrayBuffer
+      function base64URLStringToBuffer(base64URLString) {
+        const base64 = base64URLString.replace(/-/g, "+").replace(/_/g, "/");
+        const padLength = (4 - (base64.length % 4)) % 4;
+        const padded = base64.padEnd(base64.length + padLength, "=");
+        const binary = atob(padded);
+        const buffer = new ArrayBuffer(binary.length);
+        const bytes = new Uint8Array(buffer);
 
-        // Fetch user data on page load
-        window.addEventListener('load', async () => {
-            const url = new URL(window.location);
-            const userId = url.searchParams.get('userId');
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
 
-            try {
-                const response = await fetch(`/auth/user/${userId}`);
-                if (!response.ok) {
-                    throw new Error('Failed to fetch user data');
-                }
-                const userData = await response.json();
-                userEmailSpan.innerText = userData.email;
-            } catch (error) {
-                errorDiv.classList.remove('hidden');
-                errorDiv.innerText = error.message || 'Failed to load user data';
+        return buffer;
+      }
+
+      // Convert an ArrayBuffer to a Base64URL-encoded string
+      function bufferToBase64URLString(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let str = "";
+
+        for (const charCode of bytes) {
+          str += String.fromCharCode(charCode);
+        }
+
+        const base64String = btoa(str);
+        return base64String
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=/g, "");
+      }
+
+      // Determine if the browser supports WebAuthn
+      function browserSupportsWebAuthn() {
+        return (
+          window?.PublicKeyCredential !== undefined &&
+          typeof window.PublicKeyCredential === "function"
+        );
+      }
+
+      // Determine if the browser supports WebAuthn Autofill
+      function browserSupportsWebAuthnAutofill() {
+        if (!browserSupportsWebAuthn()) {
+          return Promise.resolve(false);
+        }
+
+        const globalPublicKeyCredential = window.PublicKeyCredential;
+
+        if (
+          globalPublicKeyCredential.isConditionalMediationAvailable ===
+          undefined
+        ) {
+          return Promise.resolve(false);
+        }
+
+        return globalPublicKeyCredential.isConditionalMediationAvailable();
+      }
+
+      // Convert a PublicKeyCredentialDescriptorJSON to a PublicKeyCredentialDescriptor
+      function toPublicKeyCredentialDescriptor(descriptor) {
+        const { id } = descriptor;
+
+        return {
+          ...descriptor,
+          id: base64URLStringToBuffer(id),
+          transports: descriptor.transports,
+        };
+      }
+
+      // Convert a string value into an AuthenticatorAttachment if valid
+      function toAuthenticatorAttachment(attachment) {
+        const attachments = ["cross-platform", "platform"];
+
+        if (!attachment || attachments.indexOf(attachment) < 0) {
+          return undefined;
+        }
+
+        return attachment;
+      }
+
+      // A simple test to determine if a hostname is a properly-formatted domain name
+      function isValidDomain(hostname) {
+        return (
+          hostname === "localhost" ||
+          /^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$/i.test(hostname)
+        );
+      }
+
+      // Handle errors during registration
+      function identifyRegistrationError({ error, options }) {
+        const { publicKey } = options;
+
+        if (!publicKey) {
+          throw new Error("options was missing required publicKey property");
+        }
+
+        if (
+          error.name === "AbortError" &&
+          options.signal instanceof AbortSignal
+        ) {
+          return new WebAuthnError({
+            message: "Registration ceremony was sent an abort signal",
+            code: "ERROR_CEREMONY_ABORTED",
+            cause: error,
+          });
+        }
+
+        if (
+          error.name === "ConstraintError" &&
+          publicKey.authenticatorSelection?.requireResidentKey
+        ) {
+          return new WebAuthnError({
+            message:
+              "Discoverable credentials were required but no available authenticator supported it",
+            code: "ERROR_AUTHENTICATOR_MISSING_DISCOVERABLE_CREDENTIAL_SUPPORT",
+            cause: error,
+          });
+        }
+
+        if (error.name === "InvalidStateError") {
+          return new WebAuthnError({
+            message: "The authenticator was previously registered",
+            code: "ERROR_AUTHENTICATOR_PREVIOUSLY_REGISTERED",
+            cause: error,
+          });
+        }
+
+        if (error.name === "SecurityError") {
+          const effectiveDomain = window.location.hostname;
+          if (!isValidDomain(effectiveDomain)) {
+            return new WebAuthnError({
+              message: `${window.location.hostname} is an invalid domain`,
+              code: "ERROR_INVALID_DOMAIN",
+              cause: error,
+            });
+          } else if (publicKey.rp.id !== effectiveDomain) {
+            return new WebAuthnError({
+              message: `The RP ID "${publicKey.rp.id}" is invalid for this domain`,
+              code: "ERROR_INVALID_RP_ID",
+              cause: error,
+            });
+          }
+        }
+
+        return error;
+      }
+
+      // A custom WebAuthnError class
+      class WebAuthnError extends Error {
+        constructor({ message, code, cause, name }) {
+          super(message, { cause });
+          this.name = name ?? cause.name;
+          this.code = code;
+        }
+      }
+
+      // Platform Authenticator availability check
+      function platformAuthenticatorIsAvailable() {
+        if (!browserSupportsWebAuthn()) {
+          return Promise.resolve(false);
+        }
+        return PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+      }
+
+      // Abort Service for WebAuthn
+      class BaseWebAuthnAbortService {
+        createNewAbortSignal() {
+          if (this.controller) {
+            const abortError = new Error(
+              "Cancelling existing WebAuthn API call for new one"
+            );
+            abortError.name = "AbortError";
+            this.controller.abort(abortError);
+          }
+
+          this.controller = new AbortController();
+          return this.controller.signal;
+        }
+
+        cancelCeremony() {
+          if (this.controller) {
+            const abortError = new Error(
+              "Manually cancelling existing WebAuthn API call"
+            );
+            abortError.name = "AbortError";
+            this.controller.abort(abortError);
+            this.controller = undefined;
+          }
+        }
+      }
+
+      const WebAuthnAbortService = new BaseWebAuthnAbortService();
+
+      async function startRegistration(optionsJSON) {
+        if (!browserSupportsWebAuthn()) {
+          throw new Error("WebAuthn is not supported in this browser");
+        }
+
+        // We need to convert some values to Uint8Arrays before passing the credentials to the navigator
+        const publicKey = {
+          ...optionsJSON,
+          challenge: base64URLStringToBuffer(optionsJSON.challenge),
+          user: {
+            ...optionsJSON.user,
+            id: base64URLStringToBuffer(optionsJSON.user.id),
+          },
+          excludeCredentials: optionsJSON.excludeCredentials?.map(
+            toPublicKeyCredentialDescriptor
+          ),
+        };
+
+        // Finalize options
+        const options = { publicKey };
+        // Set up the ability to cancel this request if the user attempts another
+        options.signal = WebAuthnAbortService.createNewAbortSignal();
+
+        // Wait for the user to complete attestation
+        let credential;
+        try {
+          credential = await navigator.credentials.create(options);
+        } catch (err) {
+          throw identifyRegistrationError({ error: err, options });
+        }
+
+        if (!credential) {
+          throw new Error("Registration was not completed");
+        }
+
+        const { id, rawId, response, type } = credential;
+
+        // Continue to play it safe with `getTransports()` for now, even when L3 types say it's required
+        let transports = undefined;
+        if (typeof response.getTransports === "function") {
+          transports = response.getTransports();
+        }
+
+        // L3 says this is required, but browser and webview support are still not guaranteed.
+        let responsePublicKeyAlgorithm = undefined;
+        if (typeof response.getPublicKeyAlgorithm === "function") {
+          try {
+            responsePublicKeyAlgorithm = response.getPublicKeyAlgorithm();
+          } catch (error) {
+            warnOnBrokenImplementation("getPublicKeyAlgorithm()", error);
+          }
+        }
+
+        let responsePublicKey = undefined;
+        if (typeof response.getPublicKey === "function") {
+          try {
+            const _publicKey = response.getPublicKey();
+            if (_publicKey !== null) {
+              responsePublicKey = bufferToBase64URLString(_publicKey);
             }
-        });
+          } catch (error) {
+            warnOnBrokenImplementation("getPublicKey()", error);
+          }
+        }
 
-        registerPasskeyBtn.addEventListener('click', async (e) => {
+        // L3 says this is required, but browser and webview support are still not guaranteed.
+        let responseAuthenticatorData;
+        if (typeof response.getAuthenticatorData === "function") {
+          try {
+            responseAuthenticatorData = bufferToBase64URLString(
+              response.getAuthenticatorData()
+            );
+          } catch (error) {
+            warnOnBrokenImplementation("getAuthenticatorData()", error);
+          }
+        }
+
+        return {
+          id,
+          rawId: bufferToBase64URLString(rawId),
+          response: {
+            attestationObject: bufferToBase64URLString(
+              response.attestationObject
+            ),
+            clientDataJSON: bufferToBase64URLString(response.clientDataJSON),
+            transports,
+            publicKeyAlgorithm: responsePublicKeyAlgorithm,
+            publicKey: responsePublicKey,
+            authenticatorData: responseAuthenticatorData,
+          },
+          type,
+          clientExtensionResults: credential.getClientExtensionResults(),
+          authenticatorAttachment: toAuthenticatorAttachment(
+            credential.authenticatorAttachment
+          ),
+        };
+      }
+
+      /**
+       * Visibly warn when we detect an issue related to a passkey provider intercepting WebAuthn API
+       * calls
+       */
+      function warnOnBrokenImplementation(methodName, cause) {
+        console.warn(
+          `The browser extension that intercepted this WebAuthn API call incorrectly implemented ${methodName}. You should report this error to them.\n`,
+          cause
+        );
+      }
+
+      //Custom function end
+      const registerPasskeyBtn = document.getElementById(
+        "register-passkey-btn"
+      );
+      const userEmailSpan = document.getElementById("user-email");
+      const statusDiv = document.getElementById("status");
+      const errorDiv = document.getElementById("error");
+
+      // Fetch user data on page load
+      window.addEventListener("load", async () => {
         const url = new URL(window.location);
-        const userId = url.searchParams.get('userId');
-        statusDiv.innerText = 'Registering passkey...';
-        errorDiv.classList.add('hidden');
+        const userId = url.searchParams.get("userId");
 
         try {
-            const response = await fetch('/auth/register-challenge', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ userId })
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to fetch registration challenge');
-            }
-
-            const challengeResult = await response.json();
-            const { options } = challengeResult;
-
-            const registrationResult = await SimpleWebAuthnBrowser.startRegistration(options);
-            console.log('Registration Result:', registrationResult);
-
-            const verificationResp = await fetch('/auth/register-verify', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({ userId, cred: registrationResult })
-            });
-
-            if (!verificationResp.ok) {
-                throw new Error('Failed to verify registration');
-            }
-
-            const verificationJSON = await verificationResp.json();
-
-            if (verificationJSON && verificationJSON.success) {
-                statusDiv.innerText = 'Passkey registered successfully!';
-            } else {
-                throw new Error('Passkey registration failed');
-            }
+          const response = await fetch(`/auth/user/${userId}`);
+          if (!response.ok) {
+            throw new Error("Failed to fetch user data");
+          }
+          const userData = await response.json();
+          userEmailSpan.innerText = userData.email;
         } catch (error) {
-            errorDiv.classList.remove('hidden');
-            errorDiv.innerText = error.message || 'An error occurred during passkey registration';
+          errorDiv.classList.remove("hidden");
+          errorDiv.innerText = error.message || "Failed to load user data";
         }
-    });
+      });
 
+      registerPasskeyBtn.addEventListener("click", async (e) => {
+        const url = new URL(window.location);
+        const userId = url.searchParams.get("userId");
+        statusDiv.innerText = "Registering passkey...";
+        errorDiv.classList.add("hidden");
+
+        try {
+          const response = await fetch("/auth/register-challenge", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ userId }),
+          });
+
+          if (!response.ok) {
+            throw new Error("Failed to fetch registration challenge");
+          }
+
+          const challengeResult = await response.json();
+          const { options } = challengeResult;
+
+          const registrationResult = await startRegistration(options);
+          console.log("Registration Result:", registrationResult);
+
+          const verificationResp = await fetch("/auth/register-verify", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ userId, cred: registrationResult }),
+          });
+
+          if (!verificationResp.ok) {
+            throw new Error("Failed to verify registration");
+          }
+
+          const verificationJSON = await verificationResp.json();
+
+          if (verificationJSON && verificationJSON.success) {
+            statusDiv.innerText = "Passkey registered successfully!";
+          } else {
+            throw new Error("Passkey registration failed");
+          }
+        } catch (error) {
+          errorDiv.classList.remove("hidden");
+          errorDiv.innerText =
+            error.message || "An error occurred during passkey registration";
+        }
+      });
     </script>
-</body>
+  </body>
 </html>

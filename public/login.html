@@ -1,107 +1,364 @@
 <!DOCTYPE html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Login</title>
-  <link rel="stylesheet" href="styles.css" />
-</head>
-<body>
-  <div class="container">
-    <h1>Login</h1>
-    <form id="login-form">
-      <button type="submit">Login with Passkey</button>
-    </form>
-    <div id="status"></div>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Login</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="container">
+      <h1>Login</h1>
+      <form id="login-form">
+        <button type="submit">Login with Passkey</button>
+      </form>
+      <div id="status"></div>
 
-    <p id="clientTitle" class="hidden">Client Data</p>
-    <pre id="clientDataJSON"></pre>
-    <div id="success" class="hidden">
-      <h2>Login Successful!</h2>
-      <p>Welcome, <span id="user-email"></span></p>
+      <p id="clientTitle" class="hidden">Client Data</p>
+      <pre id="clientDataJSON"></pre>
+      <div id="success" class="hidden">
+        <h2>Login Successful!</h2>
+        <p>Welcome, <span id="user-email"></span></p>
+      </div>
+      <div id="error" class="hidden"></div>
     </div>
-    <div id="error" class="hidden"></div>
-  </div>
 
-  <script src="https://unpkg.com/@simplewebauthn/browser/dist/bundle/index.umd.min.js"></script>
-  <script>
-    const form = document.getElementById("login-form");
-    const statusDiv = document.getElementById("status");
-    const successDiv = document.getElementById("success");
-    const errorDiv = document.getElementById("error");
-    const userEmailSpan = document.getElementById("user-email");
-    const clientData = document.getElementById("clientDataJSON");
-    const clientTitle = document.getElementById("clientTitle");
+    <script>
+      //Login function start
+      /**
+       * Convert from a Base64URL-encoded string to an Array Buffer. Best used when converting a
+       * credential ID from a JSON string to an ArrayBuffer, like in allowCredentials or
+       * excludeCredentials
+       *
+       * Helper method to compliment `bufferToBase64URLString`
+       */
+      function base64URLStringToBuffer(base64URLString) {
+        const base64 = base64URLString.replace(/-/g, "+").replace(/_/g, "/");
+        const padLength = (4 - (base64.length % 4)) % 4;
+        const padded = base64.padEnd(base64.length + padLength, "=");
+        const binary = atob(padded);
+        const buffer = new ArrayBuffer(binary.length);
+        const bytes = new Uint8Array(buffer);
 
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
 
-      errorDiv.classList.add("hidden");
-      successDiv.classList.add("hidden");
-      userEmailSpan.innerText = "";
-      clientData.innerText = "";
-      statusDiv.innerText = "Starting login process...";
-      try {
-        statusDiv.innerText = "Fetching login challenge...";
+        return buffer;
+      }
 
-        const response = await fetch("/auth/login-challenge", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
+      /**
+       * Convert the given array buffer into a Base64URL-encoded string. Ideal for converting various
+       * credential response ArrayBuffers to string for sending back to the server as JSON.
+       *
+       * Helper method to compliment `base64URLStringToBuffer`
+       */
+      function bufferToBase64URLString(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let str = "";
 
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(
-            errorData.error || `HTTP error! status: ${response.status}`
+        for (const charCode of bytes) {
+          str += String.fromCharCode(charCode);
+        }
+
+        const base64String = btoa(str);
+        return base64String
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=/g, "");
+      }
+
+      /**
+       * Determine if the browser is capable of WebAuthn
+       */
+      function browserSupportsWebAuthn() {
+        return (
+          window?.PublicKeyCredential !== undefined &&
+          typeof window.PublicKeyCredential === "function"
+        );
+      }
+
+      /**
+       * Determine if the browser supports conditional UI, so that WebAuthn credentials can
+       * be shown to the user in the browser's typical password autofill popup.
+       */
+      async function browserSupportsWebAuthnAutofill() {
+        if (!browserSupportsWebAuthn()) {
+          return new Promise((resolve) => resolve(false));
+        }
+
+        const globalPublicKeyCredential = window.PublicKeyCredential;
+
+        if (
+          globalPublicKeyCredential.isConditionalMediationAvailable ===
+          undefined
+        ) {
+          return new Promise((resolve) => resolve(false));
+        }
+
+        return globalPublicKeyCredential.isConditionalMediationAvailable();
+      }
+
+      /**
+       * Convert the given PublicKeyCredentialDescriptor to the format expected by the WebAuthn API.
+       */
+      function toPublicKeyCredentialDescriptor(credential) {
+        return {
+          type: credential.type,
+          id: base64URLStringToBuffer(credential.id),
+          transports: credential.transports,
+        };
+      }
+
+      /**
+       * Attempt to intuit _why_ an error was raised after calling `navigator.credentials.get()`
+       */
+      function identifyAuthenticationError({ error, options }) {
+        const { publicKey } = options;
+
+        if (!publicKey) {
+          throw Error("options was missing required publicKey property");
+        }
+
+        if (error.name === "AbortError") {
+          if (options.signal instanceof AbortSignal) {
+            return new WebAuthnError({
+              message: "Authentication ceremony was sent an abort signal",
+              code: "ERROR_CEREMONY_ABORTED",
+              cause: error,
+            });
+          }
+        } else if (error.name === "NotAllowedError") {
+          return new WebAuthnError({
+            message: error.message,
+            code: "ERROR_PASSTHROUGH_SEE_CAUSE_PROPERTY",
+            cause: error,
+          });
+        } else if (error.name === "SecurityError") {
+          const effectiveDomain = window.location.hostname;
+          if (!isValidDomain(effectiveDomain)) {
+            return new WebAuthnError({
+              message: `${window.location.hostname} is an invalid domain`,
+              code: "ERROR_INVALID_DOMAIN",
+              cause: error,
+            });
+          } else if (publicKey.rpId !== effectiveDomain) {
+            return new WebAuthnError({
+              message: `The RP ID "${publicKey.rpId}" is invalid for this domain`,
+              code: "ERROR_INVALID_RP_ID",
+              cause: error,
+            });
+          }
+        } else if (error.name === "UnknownError") {
+          return new WebAuthnError({
+            message:
+              "The authenticator was unable to process the specified options, or could not create a new assertion signature",
+            code: "ERROR_AUTHENTICATOR_GENERAL_ERROR",
+            cause: error,
+          });
+        }
+
+        return error;
+      }
+
+      /**
+       * A simple test to determine if a hostname is a properly-formatted domain name
+       */
+      function isValidDomain(hostname) {
+        return (
+          hostname === "localhost" ||
+          /^([a-z0-9]+(-[a-z0-9]+)*\.)+[a-z]{2,}$/i.test(hostname)
+        );
+      }
+
+      /**
+       * Convert the authenticator attachment to a string
+       */
+      function toAuthenticatorAttachment(attachment) {
+        if (attachment === "platform") {
+          return "platform";
+        } else if (attachment === "cross-platform") {
+          return "cross-platform";
+        } else {
+          return undefined;
+        }
+      }
+
+      /**
+       * Service to manage WebAuthn abort signals
+       */
+      const WebAuthnAbortService = {
+        createNewAbortSignal() {
+          const controller = new AbortController();
+          return controller.signal;
+        },
+      };
+
+      /**
+       * Begin authenticator "login" via WebAuthn assertion
+       *
+       * @param optionsJSON Output from **@simplewebauthn/server**'s `generateAuthenticationOptions()`
+       * @param useBrowserAutofill (Optional) Initialize conditional UI to enable logging in via browser autofill prompts. Defaults to `false`.
+       */
+      async function startAuthentication(
+        optionsJSON,
+        useBrowserAutofill = false
+      ) {
+        if (!browserSupportsWebAuthn()) {
+          throw new Error("WebAuthn is not supported in this browser");
+        }
+
+        let allowCredentials;
+        if (optionsJSON.allowCredentials?.length !== 0) {
+          allowCredentials = optionsJSON.allowCredentials?.map(
+            toPublicKeyCredentialDescriptor
           );
         }
-        const challengeResult = await response.json();
-        const { options } = challengeResult;
 
-        statusDiv.innerText = "Starting authentication...";
+        const publicKey = {
+          ...optionsJSON,
+          challenge: base64URLStringToBuffer(optionsJSON.challenge),
+          allowCredentials,
+        };
 
-        const authenticationResult =
-          await SimpleWebAuthnBrowser.startAuthentication(options);
+        const options = {};
 
-        const decodedClientDataJSON = JSON.parse(
-          atob(authenticationResult.response.clientDataJSON)
-        );
-        clientData.innerText = JSON.stringify(decodedClientDataJSON, null, 2);
-        clientTitle.classList.remove("hidden");
+        if (useBrowserAutofill) {
+          if (!(await browserSupportsWebAuthnAutofill())) {
+            throw Error("Browser does not support WebAuthn autofill");
+          }
 
-        statusDiv.innerText = "Verifying authentication...";
+          const eligibleInputs = document.querySelectorAll(
+            "input[autocomplete$='webauthn']"
+          );
 
-        const verificationResp = await fetch("/auth/login-verify", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            cred: authenticationResult,
-          }),
-        });
+          if (eligibleInputs.length < 1) {
+            throw Error(
+              'No <input> with "webauthn" as the only or last value in its `autocomplete` attribute was detected'
+            );
+          }
 
-        const verificationJSON = await verificationResp.json();
-
-        if (verificationJSON && verificationJSON.success) {
-          statusDiv.innerText = "Login successful!";
-          successDiv.classList.remove("hidden");
-          userEmailSpan.innerText = verificationJSON.email; // Directly using email
-        } else {
-          statusDiv.innerText = "Login failed!";
-          errorDiv.classList.remove("hidden");
-          errorDiv.innerHTML = `Oh no, something went wrong! Response: <pre>${JSON.stringify(
-            verificationJSON
-          )}</pre>`;
+          options.mediation = "conditional";
+          publicKey.allowCredentials = [];
         }
-      } catch (error) {
-        statusDiv.innerText = "An error occurred!";
-        errorDiv.classList.remove("hidden");
-        errorDiv.innerText = error;
+
+        options.publicKey = publicKey;
+        options.signal = WebAuthnAbortService.createNewAbortSignal();
+
+        let credential;
+        try {
+          credential = await navigator.credentials.get(options);
+        } catch (err) {
+          throw identifyAuthenticationError({ error: err, options });
+        }
+
+        if (!credential) {
+          throw new Error("Authentication was not completed");
+        }
+
+        const { id, rawId, response, type } = credential;
+
+        let userHandle = undefined;
+        if (response.userHandle) {
+          userHandle = bufferToBase64URLString(response.userHandle);
+        }
+
+        return {
+          id,
+          rawId: bufferToBase64URLString(rawId),
+          response: {
+            authenticatorData: bufferToBase64URLString(
+              response.authenticatorData
+            ),
+            clientDataJSON: bufferToBase64URLString(response.clientDataJSON),
+            signature: bufferToBase64URLString(response.signature),
+            userHandle,
+          },
+          type,
+          clientExtensionResults: credential.getClientExtensionResults(),
+          authenticatorAttachment: toAuthenticatorAttachment(
+            credential.authenticatorAttachment
+          ),
+        };
       }
-    });
-  </script>
-</body>
+
+      //Login funciton end
+      const form = document.getElementById("login-form");
+      const statusDiv = document.getElementById("status");
+      const successDiv = document.getElementById("success");
+      const errorDiv = document.getElementById("error");
+      const userEmailSpan = document.getElementById("user-email");
+      const clientData = document.getElementById("clientDataJSON");
+      const clientTitle = document.getElementById("clientTitle");
+
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+
+        errorDiv.classList.add("hidden");
+        successDiv.classList.add("hidden");
+        userEmailSpan.innerText = "";
+        clientData.innerText = "";
+        statusDiv.innerText = "Starting login process...";
+        try {
+          statusDiv.innerText = "Fetching login challenge...";
+
+          const response = await fetch("/auth/login-challenge", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+          });
+
+          if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(
+              errorData.error || `HTTP error! status: ${response.status}`
+            );
+          }
+          const challengeResult = await response.json();
+          const { options } = challengeResult;
+          console.log("Challenge Result",challengeResult);
+          statusDiv.innerText = "Starting authentication...";
+          console.log("Logged Option Just Copy to test navigate.credential.get(options)",options);
+          const authenticationResult = await startAuthentication(options);
+
+          const decodedClientDataJSON = JSON.parse(
+            atob(authenticationResult.response.clientDataJSON)
+          );
+          clientData.innerText = JSON.stringify(decodedClientDataJSON, null, 2);
+          clientTitle.classList.remove("hidden");
+
+          statusDiv.innerText = "Verifying authentication...";
+
+          const verificationResp = await fetch("/auth/login-verify", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              cred: authenticationResult,
+            }),
+          });
+
+          const verificationJSON = await verificationResp.json();
+
+          if (verificationJSON && verificationJSON.success) {
+            statusDiv.innerText = "Login successful!";
+            successDiv.classList.remove("hidden");
+            userEmailSpan.innerText = verificationJSON.email; // Directly using email
+          } else {
+            statusDiv.innerText = "Login failed!";
+            errorDiv.classList.remove("hidden");
+            errorDiv.innerHTML = `Oh no, something went wrong! Response: <pre>${JSON.stringify(
+              verificationJSON
+            )}</pre>`;
+          }
+        } catch (error) {
+          statusDiv.innerText = "An error occurred!";
+          errorDiv.classList.remove("hidden");
+          errorDiv.innerText = error;
+        }
+      });
+    </script>
+  </body>
 </html>
